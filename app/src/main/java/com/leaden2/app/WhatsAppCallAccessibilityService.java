@@ -14,12 +14,12 @@ import android.view.accessibility.AccessibilityNodeInfo;
 import android.view.accessibility.AccessibilityWindowInfo;
 
 import java.text.Normalizer;
+import java.util.List;
 import java.util.Locale;
 
 /**
  * Servicio de Accesibilidad LEADEN2 para automatización de llamadas en WhatsApp.
- * Selecciona la opción "Llamada" garantizando el toque por coordenadas exactas
- * sobre la ventana emergente.
+ * Ejecuta la marcación directa sobre los componentes del menú emergente.
  */
 public class WhatsAppCallAccessibilityService extends AccessibilityService {
     private static final String TAG = "LEADEN2WaAccess";
@@ -28,7 +28,6 @@ public class WhatsAppCallAccessibilityService extends AccessibilityService {
     private final Handler handler = new Handler(Looper.getMainLooper());
     private boolean checkQueued = false;
     private int loadingPickerRetries = 0;
-    private int menuTouchRetries = 0;
 
     @Override
     public void onServiceConnected() {
@@ -57,7 +56,7 @@ public class WhatsAppCallAccessibilityService extends AccessibilityService {
             return;
         }
 
-        scheduleInspection(250);
+        scheduleInspection(200);
     }
 
     private void scheduleInspection(long delayMs) {
@@ -73,7 +72,6 @@ public class WhatsAppCallAccessibilityService extends AccessibilityService {
         SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
         if (!prefs.getBoolean("wa_auto_call_armed", false)) {
             loadingPickerRetries = 0;
-            menuTouchRetries = 0;
             return;
         }
 
@@ -93,13 +91,13 @@ public class WhatsAppCallAccessibilityService extends AccessibilityService {
         }
 
         if (root == null) {
-            scheduleInspection(400);
+            scheduleInspection(300);
             return;
         }
 
         boolean menuOpened = prefs.getBoolean("wa_call_menu_opened", false);
 
-        // 1. Si WhatsApp está cargando "Buscando...", esperar
+        // 1. Si WhatsApp está en estado de carga "Buscando..."
         if (!menuOpened && isLoadingSendPicker(root)) {
             AccessibilityNodeInfo contactRoot = findExpectedContactRootAcrossWindows(expectedName, expectedPhone);
             if (contactRoot != null) {
@@ -107,7 +105,7 @@ public class WhatsAppCallAccessibilityService extends AccessibilityService {
                 loadingPickerRetries = 0;
             } else if (loadingPickerRetries < 35) {
                 loadingPickerRetries++;
-                scheduleInspection(400);
+                scheduleInspection(300);
                 return;
             } else {
                 disarm("Tiempo agotado esperando la búsqueda en WhatsApp.");
@@ -117,49 +115,53 @@ public class WhatsAppCallAccessibilityService extends AccessibilityService {
             loadingPickerRetries = 0;
         }
 
-        // 2. Si el menú desplegable ya se abrió en la pantalla
+        // 2. Si el menú desplegable ya está abierto
         if (menuOpened) {
-            executeTouchOnCallMenuOption();
+            triggerDirectMenuClick();
             return;
         }
 
-        // 3. Verificar que el chat activo sea el del contacto correcto
+        // 3. Verificar que el chat activo sea el del contacto
         if (!containsExpectedContact(root, expectedName, expectedPhone)) {
-            scheduleInspection(400);
+            scheduleInspection(300);
             return;
         }
 
-        // 4. Buscar el icono de llamada en la parte superior
+        // 4. Pulsar el botón de llamada en la cabecera
         AccessibilityNodeInfo callNode = findHeaderCallControl(root);
         if (callNode == null) {
-            scheduleInspection(400);
+            scheduleInspection(300);
             return;
         }
 
-        // Abrir el menú emergente
         boolean clicked = clickNodeOrParent(callNode);
         if (clicked) {
             loadingPickerRetries = 0;
-            menuTouchRetries = 0;
             prefs.edit().putBoolean("wa_call_menu_opened", true).apply();
-            scheduleInspection(350); // Tiempo para que aparezca el menú emergente
+            scheduleInspection(250);
         } else {
             disarm("Error al pulsar el botón de llamada.");
         }
     }
 
     /**
-     * Busca la opción "Llamada" en la ventana activa y ejecuta un gesto de toque directo por coordenadas.
+     * Busca la primera opción del menú desplegable ("Llamada") e interactúa directamente.
      */
-    private void executeTouchOnCallMenuOption() {
-        AccessibilityNodeInfo freshRoot = getRootInActiveWindow();
-        AccessibilityNodeInfo optionNode = findVoiceCallMenuOptionAcrossWindows(freshRoot);
+    private void triggerDirectMenuClick() {
+        AccessibilityNodeInfo root = getRootInActiveWindow();
+        if (root == null) {
+            scheduleInspection(200);
+            return;
+        }
 
+        // Intentar seleccionar por la opción textual exacta
+        AccessibilityNodeInfo optionNode = findVoiceCallMenuOptionAcrossWindows(root);
         if (optionNode != null) {
             Rect bounds = new Rect();
             optionNode.getBoundsInScreen(bounds);
 
             if (bounds.width() > 0 && bounds.height() > 0) {
+                // Realizar gesto táctil en el centro exacto del ítem
                 float x = bounds.exactCenterX();
                 float y = bounds.exactCenterY();
 
@@ -167,29 +169,30 @@ public class WhatsAppCallAccessibilityService extends AccessibilityService {
                 clickPath.moveTo(x, y);
 
                 GestureDescription.StrokeDescription stroke =
-                        new GestureDescription.StrokeDescription(clickPath, 0, 100);
+                        new GestureDescription.StrokeDescription(clickPath, 0, 50);
                 GestureDescription.Builder builder = new GestureDescription.Builder();
                 builder.addStroke(stroke);
 
-                // Desarmar la orden una vez enviado el gesto táctil
-                getSharedPreferences(PREFS, MODE_PRIVATE).edit()
-                        .putBoolean("wa_auto_call_armed", false)
-                        .putBoolean("wa_call_menu_opened", false)
-                        .apply();
-
-                boolean dispatched = dispatchGesture(builder.build(), null, null);
-                Log.i(TAG, "Toque por coordenadas ejecutado en 'Llamada' (" + x + ", " + y + "): " + dispatched);
+                disarm("Gesto de llamada ejecutado con éxito.");
+                dispatchGesture(builder.build(), null, null);
                 return;
             }
         }
 
-        // Reintentar si el menú aún no se había renderizado completamente
-        if (menuTouchRetries < 10) {
-            menuTouchRetries++;
-            handler.postDelayed(this::executeTouchOnCallMenuOption, 200);
-        } else {
-            disarm("No se pudo pulsar la opción de llamada en el menú emergente.");
+        // Respaldo por ID de la vista de elementos de menú de WhatsApp
+        List<AccessibilityNodeInfo> menuItems = root.findAccessibilityNodeInfosByViewId("com.whatsapp:id/name");
+        if (menuItems != null && !menuItems.isEmpty()) {
+            for (AccessibilityNodeInfo item : menuItems) {
+                CharSequence text = item.getText();
+                if (text != null && isExactVoiceCallLabel(text.toString())) {
+                    disarm("Opción seleccionada por ID de vista.");
+                    clickNodeOrParent(item);
+                    return;
+                }
+            }
         }
+
+        scheduleInspection(200);
     }
 
     private AccessibilityNodeInfo findExpectedContactRootAcrossWindows(String expectedName, String expectedPhone) {
