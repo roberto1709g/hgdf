@@ -300,41 +300,79 @@ public class WhatsAppCallAccessibilityService extends AccessibilityService {
         return findVoiceCallMenuOptionRecursive(root);
     }
 
+    
     private boolean isExactVoiceCallLabel(String value) {
-        return value.equals("llamada") || value.equals("llamada de voz")
-                || value.equals("llamar") || value.equals("voice call")
-                || value.equals("call") || value.equals("start voice call");
+    if (value == null) return false;
+    String val = value.trim().toLowerCase(Locale.ROOT);
+    return val.equals("llamada") || val.equals("llamada de voz")
+            || val.equals("llamar") || val.equals("voice call")
+            || val.equals("call") || val.equals("start voice call");
+}
+
+private AccessibilityNodeInfo findVoiceCallMenuOptionRecursive(AccessibilityNodeInfo node) {
+    if (node == null) return null;
+    
+    String text = node.getText() == null ? "" : node.getText().toString();
+    String desc = node.getContentDescription() == null ? "" : node.getContentDescription().toString();
+    
+    boolean exactVoiceOption = isExactVoiceCallLabel(text) || isExactVoiceCallLabel(desc);
+    
+    String textLower = text.toLowerCase(Locale.ROOT);
+    String descLower = desc.toLowerCase(Locale.ROOT);
+    boolean forbidden = textLower.contains("video") || textLower.contains("videollamada")
+            || textLower.contains("enlace") || textLower.contains("link")
+            || descLower.contains("video") || descLower.contains("videollamada")
+            || descLower.contains("enlace") || descLower.contains("link");
+
+    if (node.isVisibleToUser() && node.isEnabled() && exactVoiceOption && !forbidden) {
+        return node;
     }
 
-    private AccessibilityNodeInfo findVoiceCallMenuOptionRecursive(AccessibilityNodeInfo node) {
-        if (node == null) return null;
-        String text = node.getText() == null ? "" : normalize(node.getText().toString());
-        String desc = node.getContentDescription() == null ? "" : normalize(node.getContentDescription().toString());
-        boolean exactVoiceOption = isExactVoiceCallLabel(text) || isExactVoiceCallLabel(desc);
-        boolean forbidden = text.contains("video") || text.contains("videollamada")
-                || text.contains("enlace") || text.contains("link")
-                || desc.contains("video") || desc.contains("videollamada")
-                || desc.contains("enlace") || desc.contains("link");
-        if (node.isVisibleToUser() && node.isEnabled() && exactVoiceOption && !forbidden) {
-            return node;
-        }
-        for (int i = 0; i < node.getChildCount(); i++) {
-            AccessibilityNodeInfo found = findVoiceCallMenuOptionRecursive(node.getChild(i));
-            if (found != null) return found;
-        }
-        return null;
+    for (int i = 0; i < node.getChildCount(); i++) {
+        AccessibilityNodeInfo found = findVoiceCallMenuOptionRecursive(node.getChild(i));
+        if (found != null) return found;
     }
+    return null;
+}
 
-    private boolean clickSelfOrClickableParent(AccessibilityNodeInfo node) {
-        AccessibilityNodeInfo current = node;
-        for (int depth = 0; current != null && depth < 5; depth++) {
-            if (current.isVisibleToUser() && current.isEnabled() && current.isClickable()) {
-                return current.performAction(AccessibilityNodeInfo.ACTION_CLICK);
+private boolean clickSelfOrClickableParent(AccessibilityNodeInfo node) {
+    if (node == null) return false;
+
+    // 1. Intentar hacer clic en el nodo o subir hasta 6 niveles para encontrar un padre clickeable
+    AccessibilityNodeInfo current = node;
+    for (int depth = 0; current != null && depth < 6; depth++) {
+        if (current.isVisibleToUser() && current.isEnabled()) {
+            if (current.isClickable() && current.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
+                return true;
             }
-            current = current.getParent();
         }
-        return false;
+        current = current.getParent();
     }
+
+    // 2. Si el clic de accesibilidad estándar falla en la ventana emergente, simular un toque directo (Touch Gesture)
+    Rect bounds = new Rect();
+    node.getBoundsInScreen(bounds);
+    if (bounds.width() > 0 && bounds.height() > 0) {
+        float x = bounds.exactCenterX();
+        float y = bounds.exactCenterY();
+        
+        android.graphics.Path clickPath = new android.graphics.Path();
+        clickPath.moveTo(x, y);
+        android.accessibilityservice.GestureDescription.StrokeDescription stroke =
+                new android.accessibilityservice.GestureDescription.StrokeDescription(clickPath, 0, 100);
+        android.accessibilityservice.GestureDescription.Builder builder =
+                new android.accessibilityservice.GestureDescription.Builder();
+        builder.addStroke(stroke);
+        
+        return dispatchGesture(builder.build(), null, null);
+    }
+
+    return false;
+}
+
+
+
+    
 
     private void disarm(String reason) {
         getSharedPreferences(PREFS, MODE_PRIVATE).edit()
