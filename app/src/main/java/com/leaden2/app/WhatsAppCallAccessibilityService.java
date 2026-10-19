@@ -14,12 +14,11 @@ import android.view.accessibility.AccessibilityNodeInfo;
 import android.view.accessibility.AccessibilityWindowInfo;
 
 import java.text.Normalizer;
-import java.util.List;
 import java.util.Locale;
 
 /**
  * Servicio de Accesibilidad LEADEN2 para automatización de llamadas en WhatsApp.
- * Ejecuta la marcación directa sobre los componentes del menú emergente.
+ * Selecciona la opción de llamada mediante coordenadas directas de la ventana flotante activa.
  */
 public class WhatsAppCallAccessibilityService extends AccessibilityService {
     private static final String TAG = "LEADEN2WaAccess";
@@ -97,7 +96,7 @@ public class WhatsAppCallAccessibilityService extends AccessibilityService {
 
         boolean menuOpened = prefs.getBoolean("wa_call_menu_opened", false);
 
-        // 1. Si WhatsApp está en estado de carga "Buscando..."
+        // 1. Si WhatsApp muestra "Buscando...", esperar
         if (!menuOpened && isLoadingSendPicker(root)) {
             AccessibilityNodeInfo contactRoot = findExpectedContactRootAcrossWindows(expectedName, expectedPhone);
             if (contactRoot != null) {
@@ -115,9 +114,10 @@ public class WhatsAppCallAccessibilityService extends AccessibilityService {
             loadingPickerRetries = 0;
         }
 
-        // 2. Si el menú desplegable ya está abierto
+        // 2. Si el menú emergente ya está abierto
         if (menuOpened) {
-            triggerDirectMenuClick();
+            disarm("Ejecutando toque táctil directo en la primera opción del menú.");
+            performMenuFirstOptionTouch();
             return;
         }
 
@@ -127,7 +127,7 @@ public class WhatsAppCallAccessibilityService extends AccessibilityService {
             return;
         }
 
-        // 4. Pulsar el botón de llamada en la cabecera
+        // 4. Buscar y pulsar el icono de llamadas de la cabecera
         AccessibilityNodeInfo callNode = findHeaderCallControl(root);
         if (callNode == null) {
             scheduleInspection(300);
@@ -138,61 +138,62 @@ public class WhatsAppCallAccessibilityService extends AccessibilityService {
         if (clicked) {
             loadingPickerRetries = 0;
             prefs.edit().putBoolean("wa_call_menu_opened", true).apply();
-            scheduleInspection(250);
+            scheduleInspection(300); // Dar tiempo a que el menú desplegable aparezca
         } else {
             disarm("Error al pulsar el botón de llamada.");
         }
     }
 
     /**
-     * Busca la primera opción del menú desplegable ("Llamada") e interactúa directamente.
+     * Toca de forma directa las coordenadas de la primera opción ("Llamada")
+     * detectando la ventana emergente activa.
      */
-    private void triggerDirectMenuClick() {
-        AccessibilityNodeInfo root = getRootInActiveWindow();
-        if (root == null) {
-            scheduleInspection(200);
-            return;
-        }
+    private void performMenuFirstOptionTouch() {
+        try {
+            for (AccessibilityWindowInfo window : getWindows()) {
+                if (window == null) continue;
+                AccessibilityNodeInfo windowRoot = window.getRoot();
+                if (windowRoot == null) continue;
 
-        // Intentar seleccionar por la opción textual exacta
-        AccessibilityNodeInfo optionNode = findVoiceCallMenuOptionAcrossWindows(root);
-        if (optionNode != null) {
-            Rect bounds = new Rect();
-            optionNode.getBoundsInScreen(bounds);
+                // Buscar la opción textual en cualquier ventana accesible
+                AccessibilityNodeInfo optionNode = findVoiceCallMenuOption(windowRoot);
+                if (optionNode != null) {
+                    Rect bounds = new Rect();
+                    optionNode.getBoundsInScreen(bounds);
 
-            if (bounds.width() > 0 && bounds.height() > 0) {
-                // Realizar gesto táctil en el centro exacto del ítem
-                float x = bounds.exactCenterX();
-                float y = bounds.exactCenterY();
-
-                Path clickPath = new Path();
-                clickPath.moveTo(x, y);
-
-                GestureDescription.StrokeDescription stroke =
-                        new GestureDescription.StrokeDescription(clickPath, 0, 50);
-                GestureDescription.Builder builder = new GestureDescription.Builder();
-                builder.addStroke(stroke);
-
-                disarm("Gesto de llamada ejecutado con éxito.");
-                dispatchGesture(builder.build(), null, null);
-                return;
-            }
-        }
-
-        // Respaldo por ID de la vista de elementos de menú de WhatsApp
-        List<AccessibilityNodeInfo> menuItems = root.findAccessibilityNodeInfosByViewId("com.whatsapp:id/name");
-        if (menuItems != null && !menuItems.isEmpty()) {
-            for (AccessibilityNodeInfo item : menuItems) {
-                CharSequence text = item.getText();
-                if (text != null && isExactVoiceCallLabel(text.toString())) {
-                    disarm("Opción seleccionada por ID de vista.");
-                    clickNodeOrParent(item);
-                    return;
+                    if (bounds.width() > 0 && bounds.height() > 0) {
+                        float x = bounds.exactCenterX();
+                        float y = bounds.exactCenterY();
+                        dispatchTapGesture(x, y);
+                        return;
+                    }
                 }
             }
-        }
 
-        scheduleInspection(200);
+            // Respaldo de seguridad por coordenadas fijas del menú superior derecho
+            int screenWidth = getResources().getDisplayMetrics().widthPixels;
+            int screenHeight = getResources().getDisplayMetrics().heightPixels;
+
+            float fallbackX = screenWidth * 0.70f;
+            float fallbackY = screenHeight * 0.12f;
+
+            dispatchTapGesture(fallbackX, fallbackY);
+        } catch (Exception e) {
+            Log.e(TAG, "Error durante el toque táctil del menú.", e);
+        }
+    }
+
+    private void dispatchTapGesture(float x, float y) {
+        Path clickPath = new Path();
+        clickPath.moveTo(x, y);
+
+        GestureDescription.StrokeDescription stroke =
+                new GestureDescription.StrokeDescription(clickPath, 0, 80);
+        GestureDescription.Builder builder = new GestureDescription.Builder();
+        builder.addStroke(stroke);
+
+        boolean result = dispatchGesture(builder.build(), null, null);
+        Log.i(TAG, "Gesto de toque enviado a (" + x + ", " + y + "): " + result);
     }
 
     private AccessibilityNodeInfo findExpectedContactRootAcrossWindows(String expectedName, String expectedPhone) {
@@ -298,26 +299,6 @@ public class WhatsAppCallAccessibilityService extends AccessibilityService {
         for (int i = 0; i < node.getChildCount(); i++) {
             AccessibilityNodeInfo found = findHeaderCallControlRecursive(node.getChild(i), screenHeight);
             if (found != null) return found;
-        }
-        return null;
-    }
-
-    private AccessibilityNodeInfo findVoiceCallMenuOptionAcrossWindows(AccessibilityNodeInfo activeRoot) {
-        AccessibilityNodeInfo found = findVoiceCallMenuOption(activeRoot);
-        if (found != null) return found;
-        try {
-            for (AccessibilityWindowInfo window : getWindows()) {
-                if (window == null) continue;
-                AccessibilityNodeInfo windowRoot = window.getRoot();
-                if (windowRoot == null) continue;
-                CharSequence packageName = windowRoot.getPackageName();
-                if (packageName != null && !"com.whatsapp".contentEquals(packageName)
-                        && !"com.whatsapp.w4b".contentEquals(packageName)) continue;
-                found = findVoiceCallMenuOption(windowRoot);
-                if (found != null) return found;
-            }
-        } catch (Exception e) {
-            Log.w(TAG, "Error analizando ventanas emergentes.", e);
         }
         return null;
     }
