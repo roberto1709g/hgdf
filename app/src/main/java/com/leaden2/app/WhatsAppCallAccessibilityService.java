@@ -18,8 +18,8 @@ import java.util.Locale;
 
 /**
  * Servicio de Accesibilidad LEADEN2 para automatización de llamadas en WhatsApp.
- * Ejecuta la llamada buscando en tiempo real la posición exacta de la opción "Llamada"
- * una vez desplegado el menú emergente.
+ * Selecciona la opción "Llamada" combinando la búsqueda del contenedor padre 
+ * y toques de precisión por coordenadas (dispatchGesture).
  */
 public class WhatsAppCallAccessibilityService extends AccessibilityService {
     private static final String TAG = "LEADEN2WaAccess";
@@ -44,7 +44,7 @@ public class WhatsAppCallAccessibilityService extends AccessibilityService {
             info.notificationTimeout = 250;
             setServiceInfo(info);
         }
-        Log.i(TAG, "Servicio de accesibilidad habilitado por el usuario.");
+        Log.i(TAG, "Servicio de accesibilidad habilitado.");
     }
 
     @Override
@@ -56,7 +56,7 @@ public class WhatsAppCallAccessibilityService extends AccessibilityService {
             return;
         }
 
-        scheduleInspection(400);
+        scheduleInspection(300);
     }
 
     private void scheduleInspection(long delayMs) {
@@ -92,13 +92,13 @@ public class WhatsAppCallAccessibilityService extends AccessibilityService {
         }
 
         if (root == null) {
-            scheduleInspection(600);
+            scheduleInspection(500);
             return;
         }
 
         boolean menuOpened = prefs.getBoolean("wa_call_menu_opened", false);
 
-        // 1. Si WhatsApp está en pantalla "Buscando...", esperar
+        // 1. Si WhatsApp está cargando "Buscando...", esperar
         if (!menuOpened && isLoadingSendPicker(root)) {
             AccessibilityNodeInfo contactRoot = findExpectedContactRootAcrossWindows(expectedName, expectedPhone);
             if (contactRoot != null) {
@@ -106,7 +106,7 @@ public class WhatsAppCallAccessibilityService extends AccessibilityService {
                 loadingPickerRetries = 0;
             } else if (loadingPickerRetries < 35) {
                 loadingPickerRetries++;
-                scheduleInspection(600);
+                scheduleInspection(500);
                 return;
             } else {
                 disarm("Tiempo agotado esperando la búsqueda en WhatsApp.");
@@ -116,60 +116,62 @@ public class WhatsAppCallAccessibilityService extends AccessibilityService {
             loadingPickerRetries = 0;
         }
 
-        // 2. Si el menú desplegable ya fue activado
+        // 2. Si el menú desplegable ya está abierto
         if (menuOpened) {
             prefs.edit().putBoolean("wa_auto_call_armed", false)
                     .putBoolean("wa_call_menu_opened", false).apply();
 
-            // Ejecutar el toque buscando las coordenadas de la opción en tiempo real
-            triggerCallOptionTouchWithFreshNode();
+            // Realizar el toque buscando la opción en la pantalla activa
+            performCallSelectionWithDelay(350);
             return;
         }
 
         // 3. Verificar que el chat activo coincida con el contacto
         if (!containsExpectedContact(root, expectedName, expectedPhone)) {
-            scheduleInspection(600);
+            scheduleInspection(500);
             return;
         }
 
-        // 4. Buscar el icono de llamada en la cabecera
+        // 4. Buscar el icono de llamadas en la parte superior de la pantalla
         AccessibilityNodeInfo callNode = findHeaderCallControl(root);
         if (callNode == null) {
-            scheduleInspection(600);
+            scheduleInspection(500);
             return;
         }
 
-        // Abrir el menú emergente de llamada
-        boolean clicked = clickOptionWithFallback(callNode);
+        // Abrir el menú emergente
+        boolean clicked = clickNodeOrParent(callNode);
         if (clicked) {
             loadingPickerRetries = 0;
             prefs.edit().putBoolean("wa_call_menu_opened", true).apply();
-            scheduleInspection(500); // Dar un margen para que se renderice el menú
+            scheduleInspection(400);
         } else {
             disarm("Error al pulsar el botón de llamada.");
         }
     }
 
     /**
-     * Busca la opción "Llamada" en la pantalla actual y realiza el toque por gesto o clic.
+     * Reinspecciona la pantalla tras dar tiempo a la animación del menú emergente
+     * y ejecuta el toque sobre la opción "Llamada".
      */
-    private void triggerCallOptionTouchWithFreshNode() {
+    private void performCallSelectionWithDelay(long delayMs) {
         handler.postDelayed(() -> {
-            AccessibilityNodeInfo currentRoot = getRootInActiveWindow();
-            AccessibilityNodeInfo optionNode = findVoiceCallMenuOptionAcrossWindows(currentRoot);
+            AccessibilityNodeInfo freshRoot = getRootInActiveWindow();
+            AccessibilityNodeInfo optionNode = findVoiceCallMenuOptionAcrossWindows(freshRoot);
 
             if (optionNode == null) {
-                Log.w(TAG, "No se encontró el nodo 'Llamada' en el menú emergente activo.");
+                Log.w(TAG, "Reintentando localizar la opción 'Llamada' en el menú...");
+                scheduleInspection(300);
                 return;
             }
 
-            // Intento 1: Clic directo vía performAction en el nodo fresco
-            if (clickOptionWithFallback(optionNode)) {
-                Log.i(TAG, "Opción 'Llamada' pulsada con éxito vía performAction.");
+            // Intento A: Clic en el elemento o sus contenedores padres
+            if (clickNodeOrParent(optionNode)) {
+                Log.i(TAG, "Opción 'Llamada' pulsada vía clickNodeOrParent.");
                 return;
             }
 
-            // Intento 2: Gesto de toque táctil en las coordenadas de la pantalla
+            // Intento B: Gesto táctil por coordenadas exactas en la pantalla
             Rect bounds = new Rect();
             optionNode.getBoundsInScreen(bounds);
 
@@ -186,11 +188,11 @@ public class WhatsAppCallAccessibilityService extends AccessibilityService {
                 builder.addStroke(stroke);
 
                 boolean dispatched = dispatchGesture(builder.build(), null, null);
-                Log.i(TAG, "Gesto táctil enviado en coordenadas exactas (" + x + ", " + y + "): " + dispatched);
+                Log.i(TAG, "Toque por coordenadas ejecutado en (" + x + ", " + y + "): " + dispatched);
             } else {
-                Log.w(TAG, "Las coordenadas del nodo emergente no son válidas: " + bounds);
+                Log.w(TAG, "Coordenadas del menú no válidas: " + bounds);
             }
-        }, 200);
+        }, delayMs);
     }
 
     private AccessibilityNodeInfo findExpectedContactRootAcrossWindows(String expectedName, String expectedPhone) {
@@ -209,7 +211,7 @@ public class WhatsAppCallAccessibilityService extends AccessibilityService {
                 }
             }
         } catch (Exception e) {
-            Log.w(TAG, "Error consultando ventanas secundarias.", e);
+            Log.w(TAG, "Error analizando ventanas secundarias.", e);
         }
         return null;
     }
@@ -315,7 +317,7 @@ public class WhatsAppCallAccessibilityService extends AccessibilityService {
                 if (found != null) return found;
             }
         } catch (Exception e) {
-            Log.w(TAG, "Error buscando en ventanas emergentes.", e);
+            Log.w(TAG, "Error buscando la opción del menú.", e);
         }
         return null;
     }
@@ -357,12 +359,16 @@ public class WhatsAppCallAccessibilityService extends AccessibilityService {
         return null;
     }
 
-    private boolean clickOptionWithFallback(AccessibilityNodeInfo node) {
+    /**
+     * Intenta hacer clic en el nodo o recorrer hasta 6 niveles superiores (padres)
+     * para forzar la activación de la fila completa en el menú emergente.
+     */
+    private boolean clickNodeOrParent(AccessibilityNodeInfo node) {
         if (node == null) return false;
 
         AccessibilityNodeInfo current = node;
-        for (int depth = 0; current != null && depth < 5; depth++) {
-            if (current.isVisibleToUser() && current.isEnabled() && current.isClickable()) {
+        for (int depth = 0; current != null && depth < 6; depth++) {
+            if (current.isVisibleToUser() && current.isEnabled()) {
                 if (current.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
                     return true;
                 }
