@@ -18,8 +18,8 @@ import java.util.Locale;
 
 /**
  * Servicio de Accesibilidad LEADEN2 para automatización de llamadas en WhatsApp.
- * Selecciona la opción "Llamada" buscando el contenedor padre clickable del menú emergente
- * y ejecutando un gesto táctil de respaldo (dispatchGesture).
+ * Ejecuta la marcación sobre la opción "Llamada" garantizando el toque por coordenadas
+ * en ventanas emergentes independientes.
  */
 public class WhatsAppCallAccessibilityService extends AccessibilityService {
     private static final String TAG = "LEADEN2WaAccess";
@@ -28,6 +28,7 @@ public class WhatsAppCallAccessibilityService extends AccessibilityService {
     private final Handler handler = new Handler(Looper.getMainLooper());
     private boolean checkQueued = false;
     private int loadingPickerRetries = 0;
+    private int menuTouchRetries = 0;
 
     @Override
     public void onServiceConnected() {
@@ -72,6 +73,7 @@ public class WhatsAppCallAccessibilityService extends AccessibilityService {
         SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
         if (!prefs.getBoolean("wa_auto_call_armed", false)) {
             loadingPickerRetries = 0;
+            menuTouchRetries = 0;
             return;
         }
 
@@ -95,15 +97,14 @@ public class WhatsAppCallAccessibilityService extends AccessibilityService {
             return;
         }
 
-        // 1. Verificar si el menú emergente ya está desplegado en pantalla
+        // 1. Verificar si el menú emergente ya se encuentra en pantalla
         AccessibilityNodeInfo callMenuOption = findVoiceCallMenuOptionAcrossWindows(root);
         if (callMenuOption != null) {
-            disarm("Opción 'Llamada' localizada. Ejecutando clic en el contenedor de la fila.");
-            executeClickOnParentRow(callMenuOption);
+            triggerTapSequenceOnOption(callMenuOption);
             return;
         }
 
-        // 2. Si WhatsApp muestra "Buscando...", esperar
+        // 2. Si WhatsApp muestra la pantalla "Buscando...", esperar
         if (isLoadingSendPicker(root)) {
             AccessibilityNodeInfo contactRoot = findExpectedContactRootAcrossWindows(expectedName, expectedPhone);
             if (contactRoot != null) {
@@ -121,18 +122,18 @@ public class WhatsAppCallAccessibilityService extends AccessibilityService {
             loadingPickerRetries = 0;
         }
 
-        // 3. Verificar que el chat activo coincida con el contacto
+        // 3. Verificar que el chat activo sea el del contacto correcto
         if (!containsExpectedContact(root, expectedName, expectedPhone)) {
             scheduleInspection(300);
             return;
         }
 
-        // 4. Buscar y pulsar el icono de llamadas en la cabecera del chat
+        // 4. Pulsar el icono de llamadas en la cabecera para abrir el menú
         AccessibilityNodeInfo callNode = findHeaderCallControl(root);
         if (callNode != null) {
             boolean clicked = clickNodeOrParentContainer(callNode);
             if (clicked) {
-                Log.i(TAG, "Icono de cabecera pulsado. Esperando menú emergente...");
+                Log.i(TAG, "Icono de cabecera pulsado. Desplegando menú emergente...");
                 scheduleInspection(200);
             } else {
                 disarm("Error al pulsar el botón de llamada en la cabecera.");
@@ -143,19 +144,10 @@ public class WhatsAppCallAccessibilityService extends AccessibilityService {
     }
 
     /**
-     * Busca la fila contenedora padre de la opción "Llamada" para ejecutar el clic.
-     * Si la acción estándar no surte efecto, dispara un toque directo por coordenadas.
+     * Ejecuta una secuencia táctil directa por gesto sobre el centro exacto
+     * de la opción "Llamada" en el menú emergente.
      */
-    private void executeClickOnParentRow(AccessibilityNodeInfo node) {
-        if (node == null) return;
-
-        // Intentar clic en el nodo o subir hasta 6 niveles para encontrar el contenedor clickable
-        if (clickNodeOrParentContainer(node)) {
-            Log.i(TAG, "Opción 'Llamada' seleccionada con éxito mediante clic en contenedor padre.");
-            return;
-        }
-
-        // Respaldo: Inyección de gesto táctil en las coordenadas centrales del nodo
+    private void triggerTapSequenceOnOption(AccessibilityNodeInfo node) {
         Rect bounds = new Rect();
         node.getBoundsInScreen(bounds);
 
@@ -163,16 +155,24 @@ public class WhatsAppCallAccessibilityService extends AccessibilityService {
             float x = bounds.exactCenterX();
             float y = bounds.exactCenterY();
 
+            disarm("Marcación realizada con gesto táctil directo.");
+
+            // Disparar toque táctil por coordenadas reales de pantalla
             Path clickPath = new Path();
             clickPath.moveTo(x, y);
 
             GestureDescription.StrokeDescription stroke =
-                    new GestureDescription.StrokeDescription(clickPath, 0, 80);
+                    new GestureDescription.StrokeDescription(clickPath, 0, 70);
             GestureDescription.Builder builder = new GestureDescription.Builder();
             builder.addStroke(stroke);
 
-            boolean dispatched = dispatchGesture(builder.build(), null, null);
-            Log.i(TAG, "Gesto táctil ejecutado en coordenadas (" + x + ", " + y + "): " + dispatched);
+            boolean result = dispatchGesture(builder.build(), null, null);
+            Log.i(TAG, "Gesto táctil de marcación enviado a (" + x + ", " + y + "): " + result);
+        } else if (menuTouchRetries < 6) {
+            menuTouchRetries++;
+            scheduleInspection(150);
+        } else {
+            disarm("No se pudieron determinar las coordenadas del menú.");
         }
     }
 
