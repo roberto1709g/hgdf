@@ -18,8 +18,7 @@ import java.util.Locale;
 
 /**
  * Servicio de Accesibilidad LEADEN2 para automatización de llamadas en WhatsApp.
- * Selecciona la opción "Llamada" mediante inspección continua en tiempo real
- * e inyección de gesto táctil (dispatchGesture) con reintentos.
+ * Selecciona automáticamente la opción "Llamada" tras desplegar el menú emergente.
  */
 public class WhatsAppCallAccessibilityService extends AccessibilityService {
     private static final String TAG = "LEADEN2WaAccess";
@@ -117,7 +116,7 @@ public class WhatsAppCallAccessibilityService extends AccessibilityService {
             loadingPickerRetries = 0;
         }
 
-        // 2. Si el menú desplegable (Llamada, Videollamada, Enlace) ya está abierto
+        // 2. Si el menú desplegable ya está abierto en la pantalla
         if (menuOpened) {
             executeTouchOnCallMenuOption();
             return;
@@ -141,21 +140,28 @@ public class WhatsAppCallAccessibilityService extends AccessibilityService {
             loadingPickerRetries = 0;
             menuTouchRetries = 0;
             prefs.edit().putBoolean("wa_call_menu_opened", true).apply();
-            scheduleInspection(300); // Tiempo para desplegar el menú emergente
+            scheduleInspection(300); // Tiempo para desplegar la ventana del menú
         } else {
             disarm("Error al pulsar el botón de llamada en la cabecera.");
         }
     }
 
     /**
-     * Inspecciona la pantalla en tiempo real y ejecuta el toque táctil por coordenadas
-     * sobre la primera opción ("Llamada").
+     * Reinspecciona las ventanas en tiempo real para capturar la opción "Llamada"
+     * y ejecuta el gesto de toque táctil directo por coordenadas.
      */
     private void executeTouchOnCallMenuOption() {
         AccessibilityNodeInfo freshRoot = getRootInActiveWindow();
         AccessibilityNodeInfo optionNode = findVoiceCallMenuOptionAcrossWindows(freshRoot);
 
         if (optionNode != null) {
+            // Intentar primero clic nativo de accesibilidad
+            if (clickNodeOrParent(optionNode)) {
+                disarm("Opción 'Llamada' seleccionada vía performAction.");
+                return;
+            }
+
+            // Si falla el clic directo, calcular coordenadas y enviar toque táctil
             Rect bounds = new Rect();
             optionNode.getBoundsInScreen(bounds);
 
@@ -163,25 +169,25 @@ public class WhatsAppCallAccessibilityService extends AccessibilityService {
                 float x = bounds.exactCenterX();
                 float y = bounds.exactCenterY();
 
-                disarm("Efectuando toque por gesto táctil sobre la opción 'Llamada'.");
+                disarm("Efectuando toque táctil sobre la opción 'Llamada'.");
                 dispatchTapGesture(x, y);
                 return;
             }
         }
 
-        // Reintentar si el menú emergente aún se está renderizando
+        // Reintentar si el menú aún se está desplegando
         if (menuTouchRetries < 8) {
             menuTouchRetries++;
             handler.postDelayed(this::executeTouchOnCallMenuOption, 150);
         } else {
-            // Toque de respaldo en la posición exacta del menú desplegable superior derecho
+            // Toque de respaldo directo en las coordenadas de la primera opción del menú
             int screenWidth = getResources().getDisplayMetrics().widthPixels;
             int screenHeight = getResources().getDisplayMetrics().heightPixels;
 
             float fallbackX = screenWidth * 0.72f;
             float fallbackY = screenHeight * 0.12f;
 
-            disarm("Ejecutando toque de respaldo en coordenadas fijas del menú.");
+            disarm("Ejecutando toque de respaldo en coordenadas fijas.");
             dispatchTapGesture(fallbackX, fallbackY);
         }
     }
