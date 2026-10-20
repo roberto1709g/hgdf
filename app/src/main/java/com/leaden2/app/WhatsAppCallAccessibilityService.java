@@ -5,28 +5,22 @@ import android.accessibilityservice.AccessibilityServiceInfo;
 import android.accessibilityservice.GestureDescription;
 import android.content.SharedPreferences;
 import android.graphics.Path;
-import android.graphics.Rect;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
 import android.view.accessibility.AccessibilityEvent;
-import android.view.accessibility.AccessibilityNodeInfo;
-import android.view.accessibility.AccessibilityWindowInfo;
-
-import java.text.Normalizer;
-import java.util.Locale;
 
 /**
- * Servicio de Accesibilidad LEADEN2 para automatización de llamadas en WhatsApp.
- * Ejecución directa del botón de llamada en la cabecera y selección de la opción.
+ * Servicio de Accesibilidad LEADEN2 - Ejecución directa por secuencia táctil.
+ * Dispara la secuencia de toques sobre el botón de cabecera y la opción de llamada
+ * de forma incondicional para evitar bloqueos por capas de UI.
  */
 public class WhatsAppCallAccessibilityService extends AccessibilityService {
     private static final String TAG = "LEADEN2WaAccess";
     private static final String PREFS = "leaden2_local_data";
     private static final long MAX_ARMED_MS = 45000L;
     private final Handler handler = new Handler(Looper.getMainLooper());
-    private boolean checkQueued = false;
-    private int attemptCount = 0;
+    private boolean isExecuting = false;
 
     @Override
     public void onServiceConnected() {
@@ -34,16 +28,14 @@ public class WhatsAppCallAccessibilityService extends AccessibilityService {
         AccessibilityServiceInfo info = getServiceInfo();
         if (info != null) {
             info.eventTypes = AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED
-                    | AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED
-                    | AccessibilityEvent.TYPE_WINDOWS_CHANGED;
+                    | AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED;
             info.packageNames = new String[] {"com.whatsapp", "com.whatsapp.w4b"};
             info.feedbackType = AccessibilityServiceInfo.FEEDBACK_GENERIC;
-            info.flags |= AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS
-                    | AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS;
-            info.notificationTimeout = 200;
+            info.flags |= AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS;
+            info.notificationTimeout = 150;
             setServiceInfo(info);
         }
-        Log.i(TAG, "Servicio de accesibilidad activado.");
+        Log.i(TAG, "Servicio de accesibilidad activado en modo directo.");
     }
 
     @Override
@@ -55,97 +47,54 @@ public class WhatsAppCallAccessibilityService extends AccessibilityService {
             return;
         }
 
-        scheduleInspection(200);
-    }
-
-    private void scheduleInspection(long delayMs) {
-        if (checkQueued) return;
-        checkQueued = true;
-        handler.postDelayed(() -> {
-            checkQueued = false;
-            inspectWhatsAppWindow();
-        }, delayMs);
-    }
-
-    private void inspectWhatsAppWindow() {
         SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
-        if (!prefs.getBoolean("wa_auto_call_armed", false)) {
-            attemptCount = 0;
+        if (!prefs.getBoolean("wa_auto_call_armed", false) || isExecuting) {
             return;
         }
 
         long armedAt = prefs.getLong("wa_auto_call_armed_at", 0L);
         if (armedAt == 0L || System.currentTimeMillis() - armedAt > MAX_ARMED_MS) {
-            disarm("Se agotó el tiempo de espera; no se inició la llamada.");
+            disarm("Tiempo de espera agotado.");
             return;
         }
 
-        AccessibilityNodeInfo root = getRootInActiveWindow();
-        if (root == null) {
-            scheduleInspection(300);
-            return;
-        }
-
-        // 1. Si el menú desplegable con la opción "Llamada" ya está presente en pantalla
-        AccessibilityNodeInfo callMenuOption = findVoiceCallMenuOptionAcrossWindows(root);
-        if (callMenuOption != null) {
-            triggerTapOnOption(callMenuOption);
-            return;
-        }
-
-        // 2. Si WhatsApp muestra "Buscando...", esperar la carga
-        if (isLoadingSendPicker(root)) {
-            scheduleInspection(300);
-            return;
-        }
-
-        // 3. Buscar y presionar el botón de llamada en la cabecera
-        AccessibilityNodeInfo callNode = findHeaderCallControl(root);
-        if (callNode != null) {
-            boolean clicked = clickNodeOrParentContainer(callNode);
-            if (clicked) {
-                Log.i(TAG, "Icono de cabecera presionado. Esperando despliegue del menú...");
-                scheduleInspection(250);
-            } else {
-                Rect bounds = new Rect();
-                callNode.getBoundsInScreen(bounds);
-                if (bounds.width() > 0 && bounds.height() > 0) {
-                    dispatchTapGesture(bounds.exactCenterX(), bounds.exactCenterY());
-                    scheduleInspection(250);
-                }
-            }
-        } else {
-            attemptCount++;
-            if (attemptCount < 6) {
-                scheduleInspection(250);
-            } else {
-                // Toque de respaldo directo sobre la posición del icono de llamada en la barra superior (esquina derecha)
-                int screenWidth = getResources().getDisplayMetrics().widthPixels;
-                int screenHeight = getResources().getDisplayMetrics().heightPixels;
-
-                float callX = screenWidth * 0.78f;
-                float callY = screenHeight * 0.065f;
-
-                Log.i(TAG, "Inyectando gesto táctil en coordenadas fijas de la cabecera.");
-                dispatchTapGesture(callX, callY);
-                scheduleInspection(350);
-            }
-        }
+        executeDirectCallSequence();
     }
 
-    private void triggerTapOnOption(AccessibilityNodeInfo node) {
-        Rect bounds = new Rect();
-        node.getBoundsInScreen(bounds);
+    /**
+     * Secuencia incondicional de toques por gestos:
+     * Paso 1: Toca el icono de llamada en la barra superior.
+     * Paso 2: Toca la primera opción ("Llamada") en el desplegable.
+     */
+    private void executeDirectCallSequence() {
+        isExecuting = true;
 
-        if (bounds.width() > 0 && bounds.height() > 0) {
-            float x = bounds.exactCenterX();
-            float y = bounds.exactCenterY();
+        int screenWidth = getResources().getDisplayMetrics().widthPixels;
+        int screenHeight = getResources().getDisplayMetrics().heightPixels;
 
-            disarm("Llamada ejecutada exitosamente.");
-            dispatchTapGesture(x, y);
-        } else {
-            disarm("No se obtuvieron las coordenadas de la opción.");
-        }
+        // Coordenadas calculadas para la cabecera (botón de llamada)
+        float headerX = screenWidth * 0.78f;
+        float headerY = screenHeight * 0.065f;
+
+        // Coordenadas calculadas para el primer ítem del menú emergente ("Llamada")
+        float menuOptionX = screenWidth * 0.72f;
+        float menuOptionY = screenHeight * 0.12f;
+
+        Log.i(TAG, "Paso 1: Ejecutando toque en cabecera (" + headerX + ", " + headerY + ")");
+        dispatchTapGesture(headerX, headerY);
+
+        // Retardo para la animación de apertura del menú antes de enviar el segundo toque
+        handler.postDelayed(() -> {
+            Log.i(TAG, "Paso 2: Ejecutando toque en menú ('Llamada') (" + menuOptionX + ", " + menuOptionY + ")");
+            dispatchTapGesture(menuOptionX, menuOptionY);
+
+            // Reintento de respaldo sobre el menú
+            handler.postDelayed(() -> {
+                dispatchTapGesture(menuOptionX, menuOptionY);
+                disarm("Secuencia de llamada completada.");
+                isExecuting = false;
+            }, 200);
+        }, 250);
     }
 
     private void dispatchTapGesture(float x, float y) {
@@ -153,131 +102,11 @@ public class WhatsAppCallAccessibilityService extends AccessibilityService {
         clickPath.moveTo(x, y);
 
         GestureDescription.StrokeDescription stroke =
-                new GestureDescription.StrokeDescription(clickPath, 0, 70);
+                new GestureDescription.StrokeDescription(clickPath, 0, 60);
         GestureDescription.Builder builder = new GestureDescription.Builder();
         builder.addStroke(stroke);
 
-        boolean result = dispatchGesture(builder.build(), null, null);
-        Log.i(TAG, "Gesto táctil enviado a (" + x + ", " + y + "): " + result);
-    }
-
-    private boolean clickNodeOrParentContainer(AccessibilityNodeInfo node) {
-        if (node == null) return false;
-
-        AccessibilityNodeInfo current = node;
-        for (int depth = 0; current != null && depth < 6; depth++) {
-            if (current.isVisibleToUser() && current.isEnabled()) {
-                if (current.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
-                    return true;
-                }
-            }
-            current = current.getParent();
-        }
-        return false;
-    }
-
-    private boolean isLoadingSendPicker(AccessibilityNodeInfo root) {
-        if (root == null) return false;
-        CharSequence text = root.getText();
-        CharSequence desc = root.getContentDescription();
-        if (text != null && normalize(text.toString()).contains("buscando")) return true;
-        if (desc != null && normalize(desc.toString()).contains("buscando")) return true;
-        for (int i = 0; i < root.getChildCount(); i++) {
-            if (isLoadingSendPicker(root.getChild(i))) return true;
-        }
-        return false;
-    }
-
-    private AccessibilityNodeInfo findHeaderCallControl(AccessibilityNodeInfo root) {
-        if (root == null) return null;
-        int screenHeight = getResources().getDisplayMetrics().heightPixels;
-        return findHeaderCallControlRecursive(root, screenHeight);
-    }
-
-    private AccessibilityNodeInfo findHeaderCallControlRecursive(AccessibilityNodeInfo node, int screenHeight) {
-        if (node == null) return null;
-        String viewId = node.getViewIdResourceName();
-        String desc = node.getContentDescription() == null ? "" : normalize(node.getContentDescription().toString());
-        String idLower = viewId == null ? "" : viewId.toLowerCase(Locale.ROOT);
-
-        boolean video = desc.contains("video") || desc.contains("videollamada")
-                || idLower.contains("video_call") || idLower.contains("video-call");
-        boolean idLooksLikeCall = !idLower.isEmpty()
-                && (idLower.contains("call") || idLower.contains("voice") || idLower.contains("phone")) && !video;
-        boolean descriptionLooksLikeCall = !video && (
-                desc.contains("llamada") || desc.contains("llamar") || desc.contains("voice call")
-                || desc.contains("call") || desc.contains("start call"));
-
-        if (node.isVisibleToUser() && node.isEnabled()) {
-            Rect bounds = new Rect();
-            node.getBoundsInScreen(bounds);
-            boolean inHeader = bounds.top >= 0 && bounds.top < (int)(screenHeight * 0.25f)
-                    && bounds.bottom > bounds.top;
-            if (inHeader && (idLooksLikeCall || descriptionLooksLikeCall)) return node;
-        }
-
-        for (int i = 0; i < node.getChildCount(); i++) {
-            AccessibilityNodeInfo found = findHeaderCallControlRecursive(node.getChild(i), screenHeight);
-            if (found != null) return found;
-        }
-        return null;
-    }
-
-    private AccessibilityNodeInfo findVoiceCallMenuOptionAcrossWindows(AccessibilityNodeInfo activeRoot) {
-        AccessibilityNodeInfo found = findVoiceCallMenuOption(activeRoot);
-        if (found != null) return found;
-        try {
-            for (AccessibilityWindowInfo window : getWindows()) {
-                if (window == null) continue;
-                AccessibilityNodeInfo windowRoot = window.getRoot();
-                if (windowRoot == null) continue;
-                CharSequence packageName = windowRoot.getPackageName();
-                if (packageName != null && !"com.whatsapp".contentEquals(packageName)
-                        && !"com.whatsapp.w4b".contentEquals(packageName)) continue;
-                found = findVoiceCallMenuOption(windowRoot);
-                if (found != null) return found;
-            }
-        } catch (Exception e) {
-            Log.w(TAG, "Error analizando ventanas emergentes.", e);
-        }
-        return null;
-    }
-
-    private AccessibilityNodeInfo findVoiceCallMenuOption(AccessibilityNodeInfo root) {
-        if (root == null) return null;
-        return findVoiceCallMenuOptionRecursive(root);
-    }
-
-    private boolean isExactVoiceCallLabel(String value) {
-        if (value == null) return false;
-        String val = normalize(value);
-        return val.equals("llamada") || val.equals("llamada de voz")
-                || val.equals("llamar") || val.equals("voice call")
-                || val.equals("call") || val.equals("start voice call");
-    }
-
-    private AccessibilityNodeInfo findVoiceCallMenuOptionRecursive(AccessibilityNodeInfo node) {
-        if (node == null) return null;
-        String text = node.getText() == null ? "" : node.getText().toString();
-        String desc = node.getContentDescription() == null ? "" : node.getContentDescription().toString();
-
-        boolean exactVoiceOption = isExactVoiceCallLabel(text) || isExactVoiceCallLabel(desc);
-        String textNorm = normalize(text);
-        String descNorm = normalize(desc);
-
-        boolean forbidden = textNorm.contains("video") || textNorm.contains("videollamada")
-                || textNorm.contains("enlace") || textNorm.contains("link")
-                || descNorm.contains("video") || descNorm.contains("videollamada")
-                || descNorm.contains("enlace") || descNorm.contains("link");
-
-        if (node.isVisibleToUser() && node.isEnabled() && exactVoiceOption && !forbidden) {
-            return node;
-        }
-        for (int i = 0; i < node.getChildCount(); i++) {
-            AccessibilityNodeInfo found = findVoiceCallMenuOptionRecursive(node.getChild(i));
-            if (found != null) return found;
-        }
-        return null;
+        dispatchGesture(builder.build(), null, null);
     }
 
     private void disarm(String reason) {
@@ -286,13 +115,6 @@ public class WhatsAppCallAccessibilityService extends AccessibilityService {
                 .putBoolean("wa_call_menu_opened", false)
                 .apply();
         Log.w(TAG, reason);
-    }
-
-    private String normalize(String input) {
-        if (input == null) return "";
-        String decomposed = Normalizer.normalize(input, Normalizer.Form.NFD)
-                .replaceAll("\\p{M}+", "").toLowerCase(Locale.ROOT);
-        return decomposed.replaceAll("[^a-z0-9+ ]", " ").replaceAll("\\s+", " ").trim();
     }
 
     @Override
