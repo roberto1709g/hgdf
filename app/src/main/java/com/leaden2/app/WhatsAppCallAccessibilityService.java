@@ -18,7 +18,7 @@ import java.util.Locale;
 
 /**
  * Servicio de Accesibilidad LEADEN2 para automatización de llamadas en WhatsApp.
- * Cierra automáticamente el teclado si está desplegado antes de presionar el botón de llamada.
+ * Cierra el teclado virtual si interfiere y realiza el toque táctil de llamada.
  */
 public class WhatsAppCallAccessibilityService extends AccessibilityService {
     private static final String TAG = "LEADEN2WaAccess";
@@ -96,14 +96,14 @@ public class WhatsAppCallAccessibilityService extends AccessibilityService {
             return;
         }
 
-        // 1. Si el menú desplegable de opciones ya está abierto
+        // 1. Si la opción de llamada del menú emergente ya está visible en pantalla
         AccessibilityNodeInfo callMenuOption = findVoiceCallMenuOptionAcrossWindows(root);
         if (callMenuOption != null) {
             triggerTapOnOption(callMenuOption);
             return;
         }
 
-        // 2. Si WhatsApp muestra "Buscando...", esperar
+        // 2. Si WhatsApp se encuentra cargando/buscando el contacto
         if (isLoadingSendPicker(root)) {
             AccessibilityNodeInfo contactRoot = findExpectedContactRootAcrossWindows(expectedName, expectedPhone);
             if (contactRoot != null) {
@@ -121,27 +121,27 @@ public class WhatsAppCallAccessibilityService extends AccessibilityService {
             loadingPickerRetries = 0;
         }
 
-        // 3. Verificar que el chat activo sea el del contacto correcto
+        // 3. Confirmar que estamos dentro del chat con el contacto objetivo
         if (!containsExpectedContact(root, expectedName, expectedPhone)) {
             scheduleInspection(300);
             return;
         }
 
-        // 4. Si el teclado está abierto (el campo de texto tiene el foco), ocultarlo
+        // 4. Si el cuadro de texto tiene foco (teclado desplegado), replegar el teclado
         if (!keyboardDismissed && isInputBoxFocused(root)) {
             keyboardDismissed = true;
-            Log.i(TAG, "Teclado detectado. Ocultándolo con botón Atrás...");
+            Log.i(TAG, "Teclado activo detectado. Ocultando teclado...");
             performGlobalAction(GLOBAL_ACTION_BACK);
-            scheduleInspection(350); // Dar tiempo a que el teclado se oculte completamente
+            scheduleInspection(300);
             return;
         }
 
-        // 5. Buscar y pulsar el icono de llamadas en la cabecera
+        // 5. Ubicar el control de llamada en la cabecera
         AccessibilityNodeInfo callNode = findHeaderCallControl(root);
         if (callNode != null) {
             boolean clicked = clickNodeOrParentContainer(callNode);
             if (clicked) {
-                Log.i(TAG, "Icono de llamada pulsado. Esperando despliegue del menú...");
+                Log.i(TAG, "Icono de cabecera presionado. Esperando apertura del menú...");
                 scheduleInspection(250);
             } else {
                 Rect bounds = new Rect();
@@ -152,14 +152,14 @@ public class WhatsAppCallAccessibilityService extends AccessibilityService {
                 }
             }
         } else {
-            // Respaldo de toque directo sobre las coordenadas de la cabecera si el teclado ya bajó
+            // Coordenadas fijas de respaldo en el margen superior derecho (libre de teclado)
             int screenWidth = getResources().getDisplayMetrics().widthPixels;
             int screenHeight = getResources().getDisplayMetrics().heightPixels;
 
             float callX = screenWidth * 0.78f;
             float callY = screenHeight * 0.065f;
 
-            Log.i(TAG, "Presionando coordenadas de cabecera libres de teclado.");
+            Log.i(TAG, "Ejecutando gesto de toque en coordenadas de la cabecera.");
             dispatchTapGesture(callX, callY);
             scheduleInspection(300);
         }
@@ -184,10 +184,10 @@ public class WhatsAppCallAccessibilityService extends AccessibilityService {
             float x = bounds.exactCenterX();
             float y = bounds.exactCenterY();
 
-            disarm("Marcación de llamada completada.");
+            disarm("Marcación de llamada iniciada exitosamente.");
             dispatchTapGesture(x, y);
         } else {
-            disarm("No se pudieron obtener las coordenadas de la opción.");
+            disarm("No se obtuvieron las coordenadas de la opción.");
         }
     }
 
