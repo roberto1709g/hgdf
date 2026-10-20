@@ -26,6 +26,54 @@ import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
+
+import android.content.Intent;
+import android.content.SharedPreferences;
+import android.net.Uri;
+import android.os.Bundle;
+import android.util.Log;
+import androidx.appcompat.app.AppCompatActivity;
+
+public class MainActivity extends AppCompatActivity {
+
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        setContentView(R.layout.activity_main);
+    }
+
+    /**
+     * Método para preparar los datos de la llamada y redirigir a WhatsApp.
+     */
+    public void makeWhatsAppCall(String phoneNumber, String contactName) {
+        try {
+            // 1. Limpiar el número (eliminar caracteres no numéricos)
+            String cleanNumber = phoneNumber.replaceAll("\\D", "");
+
+            // 2. Armar las preferencias compartidas para el servicio de accesibilidad
+            SharedPreferences prefs = getSharedPreferences("leaden2_local_data", MODE_PRIVATE);
+            prefs.edit()
+                    .putBoolean("wa_auto_call_armed", true)
+                    .putLong("wa_auto_call_armed_at", System.currentTimeMillis())
+                    .putString("wa_auto_call_phone", cleanNumber)
+                    .putString("wa_auto_call_name", contactName != null ? contactName : "")
+                    .putBoolean("wa_call_menu_opened", false)
+                    .apply();
+
+            // 3. Abrir la ventana de chat del contacto en WhatsApp
+            Intent intent = new Intent(Intent.ACTION_VIEW);
+            intent.setData(Uri.parse("https://api.whatsapp.com/send?phone=" + cleanNumber));
+            intent.setPackage("com.whatsapp");
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+
+            startActivity(intent);
+            Log.i("LEADEN2", "WhatsApp abierto e intent de llamada armado para: " + cleanNumber);
+
+        } catch (Exception e) {
+            Log.e("LEADEN2", "Error al intentar abrir WhatsApp", e);
+        }
+    }
+}
 public class MainActivity extends AppCompatActivity {
     private static final int REQUEST_RECORD_AUDIO = 410;
     private static final String PREFS = "leaden2_local_data";
