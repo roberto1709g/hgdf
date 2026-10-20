@@ -18,7 +18,7 @@ import java.util.Locale;
 
 /**
  * Servicio de Accesibilidad LEADEN2 para automatización de llamadas en WhatsApp.
- * Selecciona automáticamente la opción "Llamada" tras desplegar el menú emergente.
+ * Captura y presiona dinámicamente la opción "Llamada" en menús emergentes.
  */
 public class WhatsAppCallAccessibilityService extends AccessibilityService {
     private static final String TAG = "LEADEN2WaAccess";
@@ -27,7 +27,6 @@ public class WhatsAppCallAccessibilityService extends AccessibilityService {
     private final Handler handler = new Handler(Looper.getMainLooper());
     private boolean checkQueued = false;
     private int loadingPickerRetries = 0;
-    private int menuTouchRetries = 0;
 
     @Override
     public void onServiceConnected() {
@@ -41,7 +40,7 @@ public class WhatsAppCallAccessibilityService extends AccessibilityService {
             info.feedbackType = AccessibilityServiceInfo.FEEDBACK_GENERIC;
             info.flags |= AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS
                     | AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS;
-            info.notificationTimeout = 250;
+            info.notificationTimeout = 200;
             setServiceInfo(info);
         }
         Log.i(TAG, "Servicio de accesibilidad activado.");
@@ -56,7 +55,7 @@ public class WhatsAppCallAccessibilityService extends AccessibilityService {
             return;
         }
 
-        scheduleInspection(250);
+        scheduleInspection(200);
     }
 
     private void scheduleInspection(long delayMs) {
@@ -72,7 +71,6 @@ public class WhatsAppCallAccessibilityService extends AccessibilityService {
         SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
         if (!prefs.getBoolean("wa_auto_call_armed", false)) {
             loadingPickerRetries = 0;
-            menuTouchRetries = 0;
             return;
         }
 
@@ -92,117 +90,88 @@ public class WhatsAppCallAccessibilityService extends AccessibilityService {
         }
 
         if (root == null) {
-            scheduleInspection(350);
+            scheduleInspection(300);
             return;
         }
 
-        boolean menuOpened = prefs.getBoolean("wa_call_menu_opened", false);
+        // 1. Verificar si el menú emergente ya se encuentra desplegado en pantalla
+        AccessibilityNodeInfo callMenuOption = findVoiceCallMenuOptionAcrossWindows(root);
+        if (callMenuOption != null) {
+            disarm("Opción 'Llamada' detectada en el menú emergente. Ejecutando selección.");
+            executeSelectionOnCallOption(callMenuOption);
+            return;
+        }
 
-        // 1. Si WhatsApp muestra la pantalla "Buscando...", esperar
-        if (!menuOpened && isLoadingSendPicker(root)) {
+        // 2. Si WhatsApp muestra "Buscando...", esperar
+        if (isLoadingSendPicker(root)) {
             AccessibilityNodeInfo contactRoot = findExpectedContactRootAcrossWindows(expectedName, expectedPhone);
             if (contactRoot != null) {
                 root = contactRoot;
                 loadingPickerRetries = 0;
             } else if (loadingPickerRetries < 35) {
                 loadingPickerRetries++;
-                scheduleInspection(350);
+                scheduleInspection(300);
                 return;
             } else {
                 disarm("Tiempo agotado esperando la búsqueda en WhatsApp.");
                 return;
             }
-        } else if (!menuOpened && !isLoadingSendPicker(root)) {
-            loadingPickerRetries = 0;
-        }
-
-        // 2. Si el menú desplegable ya está abierto en la pantalla
-        if (menuOpened) {
-            executeTouchOnCallMenuOption();
-            return;
-        }
-
-        // 3. Verificar que el chat activo sea el del contacto correcto
-        if (!containsExpectedContact(root, expectedName, expectedPhone)) {
-            scheduleInspection(350);
-            return;
-        }
-
-        // 4. Buscar y pulsar el icono de llamadas en la cabecera
-        AccessibilityNodeInfo callNode = findHeaderCallControl(root);
-        if (callNode == null) {
-            scheduleInspection(350);
-            return;
-        }
-
-        boolean clicked = clickNodeOrParent(callNode);
-        if (clicked) {
-            loadingPickerRetries = 0;
-            menuTouchRetries = 0;
-            prefs.edit().putBoolean("wa_call_menu_opened", true).apply();
-            scheduleInspection(300); // Tiempo para desplegar la ventana del menú
         } else {
-            disarm("Error al pulsar el botón de llamada en la cabecera.");
+            loadingPickerRetries = 0;
+        }
+
+        // 3. Verificar que el chat activo coincida con el contacto
+        if (!containsExpectedContact(root, expectedName, expectedPhone)) {
+            scheduleInspection(300);
+            return;
+        }
+
+        // 4. Buscar y pulsar el icono de llamadas en la cabecera para abrir el menú
+        AccessibilityNodeInfo callNode = findHeaderCallControl(root);
+        if (callNode != null) {
+            boolean clicked = clickNodeOrParent(callNode);
+            if (clicked) {
+                Log.i(TAG, "Icono de cabecera pulsado. Esperando despliegue del menú...");
+                scheduleInspection(250);
+            } else {
+                disarm("Error al pulsar el botón de llamada en la cabecera.");
+            }
+        } else {
+            scheduleInspection(300);
         }
     }
 
     /**
-     * Reinspecciona las ventanas en tiempo real para capturar la opción "Llamada"
-     * y ejecuta el gesto de toque táctil directo por coordenadas.
+     * Intenta hacer clic en el nodo o ejecuta un gesto de toque táctil en sus coordenadas exactas.
      */
-    private void executeTouchOnCallMenuOption() {
-        AccessibilityNodeInfo freshRoot = getRootInActiveWindow();
-        AccessibilityNodeInfo optionNode = findVoiceCallMenuOptionAcrossWindows(freshRoot);
+    private void executeSelectionOnCallOption(AccessibilityNodeInfo node) {
+        if (node == null) return;
 
-        if (optionNode != null) {
-            // Intentar primero clic nativo de accesibilidad
-            if (clickNodeOrParent(optionNode)) {
-                disarm("Opción 'Llamada' seleccionada vía performAction.");
-                return;
-            }
-
-            // Si falla el clic directo, calcular coordenadas y enviar toque táctil
-            Rect bounds = new Rect();
-            optionNode.getBoundsInScreen(bounds);
-
-            if (bounds.width() > 0 && bounds.height() > 0) {
-                float x = bounds.exactCenterX();
-                float y = bounds.exactCenterY();
-
-                disarm("Efectuando toque táctil sobre la opción 'Llamada'.");
-                dispatchTapGesture(x, y);
-                return;
-            }
+        // Intento 1: Acción de clic estándar
+        if (clickNodeOrParent(node)) {
+            Log.i(TAG, "Llamada seleccionada vía performAction.");
+            return;
         }
 
-        // Reintentar si el menú aún se está desplegando
-        if (menuTouchRetries < 8) {
-            menuTouchRetries++;
-            handler.postDelayed(this::executeTouchOnCallMenuOption, 150);
-        } else {
-            // Toque de respaldo directo en las coordenadas de la primera opción del menú
-            int screenWidth = getResources().getDisplayMetrics().widthPixels;
-            int screenHeight = getResources().getDisplayMetrics().heightPixels;
+        // Intento 2: Gesto táctil por coordenadas reales en pantalla
+        Rect bounds = new Rect();
+        node.getBoundsInScreen(bounds);
 
-            float fallbackX = screenWidth * 0.72f;
-            float fallbackY = screenHeight * 0.12f;
+        if (bounds.width() > 0 && bounds.height() > 0) {
+            float x = bounds.exactCenterX();
+            float y = bounds.exactCenterY();
 
-            disarm("Ejecutando toque de respaldo en coordenadas fijas.");
-            dispatchTapGesture(fallbackX, fallbackY);
+            Path clickPath = new Path();
+            clickPath.moveTo(x, y);
+
+            GestureDescription.StrokeDescription stroke =
+                    new GestureDescription.StrokeDescription(clickPath, 0, 80);
+            GestureDescription.Builder builder = new GestureDescription.Builder();
+            builder.addStroke(stroke);
+
+            boolean dispatched = dispatchGesture(builder.build(), null, null);
+            Log.i(TAG, "Toque táctil inyectado en la opción 'Llamada' (" + x + ", " + y + "): " + dispatched);
         }
-    }
-
-    private void dispatchTapGesture(float x, float y) {
-        Path clickPath = new Path();
-        clickPath.moveTo(x, y);
-
-        GestureDescription.StrokeDescription stroke =
-                new GestureDescription.StrokeDescription(clickPath, 0, 80);
-        GestureDescription.Builder builder = new GestureDescription.Builder();
-        builder.addStroke(stroke);
-
-        boolean result = dispatchGesture(builder.build(), null, null);
-        Log.i(TAG, "Gesto táctil enviado a (" + x + ", " + y + "): " + result);
     }
 
     private AccessibilityNodeInfo findExpectedContactRootAcrossWindows(String expectedName, String expectedPhone) {
