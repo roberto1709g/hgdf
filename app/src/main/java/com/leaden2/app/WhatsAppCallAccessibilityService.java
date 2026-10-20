@@ -14,11 +14,13 @@ import android.view.accessibility.AccessibilityNodeInfo;
 import android.view.accessibility.AccessibilityWindowInfo;
 
 import java.text.Normalizer;
+import java.util.List;
 import java.util.Locale;
 
 /**
  * Servicio de Accesibilidad LEADEN2 para automatización de llamadas en WhatsApp.
- * Captura y presiona dinámicamente la opción "Llamada" en menús emergentes.
+ * Ejecuta la selección de la opción "Llamada" asegurando el toque táctil directo
+ * sobre la ventana emergente o la vista del chat.
  */
 public class WhatsAppCallAccessibilityService extends AccessibilityService {
     private static final String TAG = "LEADEN2WaAccess";
@@ -94,11 +96,11 @@ public class WhatsAppCallAccessibilityService extends AccessibilityService {
             return;
         }
 
-        // 1. Verificar si el menú emergente ya se encuentra desplegado en pantalla
+        // 1. Si el menú desplegable ya está abierto en pantalla
         AccessibilityNodeInfo callMenuOption = findVoiceCallMenuOptionAcrossWindows(root);
         if (callMenuOption != null) {
-            disarm("Opción 'Llamada' detectada en el menú emergente. Ejecutando selección.");
-            executeSelectionOnCallOption(callMenuOption);
+            disarm("Ejecutando selección sobre la opción de llamada.");
+            executeDirectTouchOnNode(callMenuOption);
             return;
         }
 
@@ -126,13 +128,24 @@ public class WhatsAppCallAccessibilityService extends AccessibilityService {
             return;
         }
 
-        // 4. Buscar y pulsar el icono de llamadas en la cabecera para abrir el menú
+        // 4. Intentar llamada por ID nativo directo de WhatsApp
+        List<AccessibilityNodeInfo> callButtons = root.findAccessibilityNodeInfosByViewId("com.whatsapp:id/action_voice_call");
+        if (callButtons != null && !callButtons.isEmpty()) {
+            AccessibilityNodeInfo btn = callButtons.get(0);
+            if (btn.isEnabled()) {
+                disarm("Iniciando llamada por ID de vista nativo.");
+                clickNodeOrParent(btn);
+                return;
+            }
+        }
+
+        // 5. Pulsar el icono de llamada en la cabecera para desplegar el menú
         AccessibilityNodeInfo callNode = findHeaderCallControl(root);
         if (callNode != null) {
             boolean clicked = clickNodeOrParent(callNode);
             if (clicked) {
-                Log.i(TAG, "Icono de cabecera pulsado. Esperando despliegue del menú...");
-                scheduleInspection(250);
+                Log.i(TAG, "Icono de cabecera pulsado. Esperando despliegue...");
+                scheduleInspection(200);
             } else {
                 disarm("Error al pulsar el botón de llamada en la cabecera.");
             }
@@ -142,18 +155,18 @@ public class WhatsAppCallAccessibilityService extends AccessibilityService {
     }
 
     /**
-     * Intenta hacer clic en el nodo o ejecuta un gesto de toque táctil en sus coordenadas exactas.
+     * Ejecuta la acción de clic o dispara un gesto táctil inmediato en las coordenadas del nodo.
      */
-    private void executeSelectionOnCallOption(AccessibilityNodeInfo node) {
+    private void executeDirectTouchOnNode(AccessibilityNodeInfo node) {
         if (node == null) return;
 
-        // Intento 1: Acción de clic estándar
+        // Clic estándar de accesibilidad
         if (clickNodeOrParent(node)) {
-            Log.i(TAG, "Llamada seleccionada vía performAction.");
+            Log.i(TAG, "Acción de clic realizada en la opción 'Llamada'.");
             return;
         }
 
-        // Intento 2: Gesto táctil por coordenadas reales en pantalla
+        // Gesto táctil por coordenadas de pantalla
         Rect bounds = new Rect();
         node.getBoundsInScreen(bounds);
 
@@ -170,7 +183,7 @@ public class WhatsAppCallAccessibilityService extends AccessibilityService {
             builder.addStroke(stroke);
 
             boolean dispatched = dispatchGesture(builder.build(), null, null);
-            Log.i(TAG, "Toque táctil inyectado en la opción 'Llamada' (" + x + ", " + y + "): " + dispatched);
+            Log.i(TAG, "Gesto táctil inyectado en (" + x + ", " + y + "): " + dispatched);
         }
     }
 
