@@ -475,6 +475,43 @@ public class MainActivity extends AppCompatActivity {
         return b;
     }
 
+
+
+
+
+public void makeWhatsAppCall(String phoneNumber, String contactName) {
+    try {
+        // 1. Limpiar el número (dejar solo dígitos)
+        String cleanNumber = phoneNumber.replaceAll("\\D", "");
+
+        // 2. Armar las preferencias compartidas con los datos del contacto objetivo
+        SharedPreferences prefs = getSharedPreferences("leaden2_local_data", MODE_PRIVATE);
+        prefs.edit()
+                .putBoolean("wa_auto_call_armed", true)
+                .putLong("wa_auto_call_armed_at", System.currentTimeMillis())
+                .putString("wa_auto_call_phone", cleanNumber)
+                .putString("wa_auto_call_name", contactName != null ? contactName : "")
+                .putBoolean("wa_call_menu_opened", false)
+                .apply();
+
+        // 3. Abrir la ventana de chat del contacto en WhatsApp
+        Intent intent = new Intent(Intent.ACTION_VIEW);
+        intent.setData(Uri.parse("https://api.whatsapp.com/send?phone=" + cleanNumber));
+        intent.setPackage("com.whatsapp");
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+
+        startActivity(intent);
+        Log.i("LEADEN2", "WhatsApp abierto e intent de llamada armado para: " + cleanNumber);
+
+    } catch (Exception e) {
+        Log.e("LEADEN2", "Error al intentar abrir WhatsApp", e);
+    }
+}
+
+    
+
+
+    
     private LinearLayout.LayoutParams buttonParams() {
         LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         p.topMargin = dp(10);
