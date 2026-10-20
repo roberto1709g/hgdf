@@ -14,13 +14,12 @@ import android.view.accessibility.AccessibilityNodeInfo;
 import android.view.accessibility.AccessibilityWindowInfo;
 
 import java.text.Normalizer;
-import java.util.List;
 import java.util.Locale;
 
 /**
  * Servicio de Accesibilidad LEADEN2 para automatización de llamadas en WhatsApp.
- * Ejecuta la selección de la opción "Llamada" asegurando el toque táctil directo
- * sobre la ventana emergente o la vista del chat.
+ * Selecciona la opción "Llamada" buscando el contenedor padre clickable del menú emergente
+ * y ejecutando un gesto táctil de respaldo (dispatchGesture).
  */
 public class WhatsAppCallAccessibilityService extends AccessibilityService {
     private static final String TAG = "LEADEN2WaAccess";
@@ -96,11 +95,11 @@ public class WhatsAppCallAccessibilityService extends AccessibilityService {
             return;
         }
 
-        // 1. Si el menú desplegable ya está abierto en pantalla
+        // 1. Verificar si el menú emergente ya está desplegado en pantalla
         AccessibilityNodeInfo callMenuOption = findVoiceCallMenuOptionAcrossWindows(root);
         if (callMenuOption != null) {
-            disarm("Ejecutando selección sobre la opción de llamada.");
-            executeDirectTouchOnNode(callMenuOption);
+            disarm("Opción 'Llamada' localizada. Ejecutando clic en el contenedor de la fila.");
+            executeClickOnParentRow(callMenuOption);
             return;
         }
 
@@ -128,23 +127,12 @@ public class WhatsAppCallAccessibilityService extends AccessibilityService {
             return;
         }
 
-        // 4. Intentar llamada por ID nativo directo de WhatsApp
-        List<AccessibilityNodeInfo> callButtons = root.findAccessibilityNodeInfosByViewId("com.whatsapp:id/action_voice_call");
-        if (callButtons != null && !callButtons.isEmpty()) {
-            AccessibilityNodeInfo btn = callButtons.get(0);
-            if (btn.isEnabled()) {
-                disarm("Iniciando llamada por ID de vista nativo.");
-                clickNodeOrParent(btn);
-                return;
-            }
-        }
-
-        // 5. Pulsar el icono de llamada en la cabecera para desplegar el menú
+        // 4. Buscar y pulsar el icono de llamadas en la cabecera del chat
         AccessibilityNodeInfo callNode = findHeaderCallControl(root);
         if (callNode != null) {
-            boolean clicked = clickNodeOrParent(callNode);
+            boolean clicked = clickNodeOrParentContainer(callNode);
             if (clicked) {
-                Log.i(TAG, "Icono de cabecera pulsado. Esperando despliegue...");
+                Log.i(TAG, "Icono de cabecera pulsado. Esperando menú emergente...");
                 scheduleInspection(200);
             } else {
                 disarm("Error al pulsar el botón de llamada en la cabecera.");
@@ -155,18 +143,19 @@ public class WhatsAppCallAccessibilityService extends AccessibilityService {
     }
 
     /**
-     * Ejecuta la acción de clic o dispara un gesto táctil inmediato en las coordenadas del nodo.
+     * Busca la fila contenedora padre de la opción "Llamada" para ejecutar el clic.
+     * Si la acción estándar no surte efecto, dispara un toque directo por coordenadas.
      */
-    private void executeDirectTouchOnNode(AccessibilityNodeInfo node) {
+    private void executeClickOnParentRow(AccessibilityNodeInfo node) {
         if (node == null) return;
 
-        // Clic estándar de accesibilidad
-        if (clickNodeOrParent(node)) {
-            Log.i(TAG, "Acción de clic realizada en la opción 'Llamada'.");
+        // Intentar clic en el nodo o subir hasta 6 niveles para encontrar el contenedor clickable
+        if (clickNodeOrParentContainer(node)) {
+            Log.i(TAG, "Opción 'Llamada' seleccionada con éxito mediante clic en contenedor padre.");
             return;
         }
 
-        // Gesto táctil por coordenadas de pantalla
+        // Respaldo: Inyección de gesto táctil en las coordenadas centrales del nodo
         Rect bounds = new Rect();
         node.getBoundsInScreen(bounds);
 
@@ -183,8 +172,23 @@ public class WhatsAppCallAccessibilityService extends AccessibilityService {
             builder.addStroke(stroke);
 
             boolean dispatched = dispatchGesture(builder.build(), null, null);
-            Log.i(TAG, "Gesto táctil inyectado en (" + x + ", " + y + "): " + dispatched);
+            Log.i(TAG, "Gesto táctil ejecutado en coordenadas (" + x + ", " + y + "): " + dispatched);
         }
+    }
+
+    private boolean clickNodeOrParentContainer(AccessibilityNodeInfo node) {
+        if (node == null) return false;
+
+        AccessibilityNodeInfo current = node;
+        for (int depth = 0; current != null && depth < 6; depth++) {
+            if (current.isVisibleToUser() && current.isEnabled()) {
+                if (current.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
+                    return true;
+                }
+            }
+            current = current.getParent();
+        }
+        return false;
     }
 
     private AccessibilityNodeInfo findExpectedContactRootAcrossWindows(String expectedName, String expectedPhone) {
@@ -349,21 +353,6 @@ public class WhatsAppCallAccessibilityService extends AccessibilityService {
             if (found != null) return found;
         }
         return null;
-    }
-
-    private boolean clickNodeOrParent(AccessibilityNodeInfo node) {
-        if (node == null) return false;
-
-        AccessibilityNodeInfo current = node;
-        for (int depth = 0; current != null && depth < 6; depth++) {
-            if (current.isVisibleToUser() && current.isEnabled()) {
-                if (current.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
-                    return true;
-                }
-            }
-            current = current.getParent();
-        }
-        return false;
     }
 
     private void disarm(String reason) {
