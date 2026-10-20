@@ -18,8 +18,8 @@ import java.util.Locale;
 
 /**
  * Servicio de Accesibilidad LEADEN2 para automatización de llamadas en WhatsApp.
- * Recupera el despliegue del menú emergente y aplica un toque por coordenadas
- * persistente sobre la opción "Llamada".
+ * Realiza la selección automática de "Llamada" mediante inspección en tiempo real
+ * y toque de precisión por coordenadas (dispatchGesture).
  */
 public class WhatsAppCallAccessibilityService extends AccessibilityService {
     private static final String TAG = "LEADEN2WaAccess";
@@ -45,7 +45,7 @@ public class WhatsAppCallAccessibilityService extends AccessibilityService {
             info.notificationTimeout = 250;
             setServiceInfo(info);
         }
-        Log.i(TAG, "Servicio de accesibilidad habilitado.");
+        Log.i(TAG, "Servicio de accesibilidad activado.");
     }
 
     @Override
@@ -99,7 +99,7 @@ public class WhatsAppCallAccessibilityService extends AccessibilityService {
 
         boolean menuOpened = prefs.getBoolean("wa_call_menu_opened", false);
 
-        // 1. Si WhatsApp está cargando la búsqueda ("Buscando...")
+        // 1. Si WhatsApp está en estado de carga "Buscando..."
         if (!menuOpened && isLoadingSendPicker(root)) {
             AccessibilityNodeInfo contactRoot = findExpectedContactRootAcrossWindows(expectedName, expectedPhone);
             if (contactRoot != null) {
@@ -117,19 +117,19 @@ public class WhatsAppCallAccessibilityService extends AccessibilityService {
             loadingPickerRetries = 0;
         }
 
-        // 2. Si el menú desplegable ya está abierto en la pantalla
+        // 2. Si el menú desplegable (Llamada, Videollamada, Enlace) ya está abierto
         if (menuOpened) {
             executeTouchOnCallMenuOption();
             return;
         }
 
-        // 3. Verificar que el chat activo corresponda al contacto
+        // 3. Verificar que el chat activo sea el del contacto
         if (!containsExpectedContact(root, expectedName, expectedPhone)) {
             scheduleInspection(350);
             return;
         }
 
-        // 4. Localizar y pulsar el icono de llamadas en la cabecera
+        // 4. Buscar y pulsar el icono de llamadas en la cabecera
         AccessibilityNodeInfo callNode = findHeaderCallControl(root);
         if (callNode == null) {
             scheduleInspection(350);
@@ -141,14 +141,15 @@ public class WhatsAppCallAccessibilityService extends AccessibilityService {
             loadingPickerRetries = 0;
             menuTouchRetries = 0;
             prefs.edit().putBoolean("wa_call_menu_opened", true).apply();
-            scheduleInspection(300); // Tiempo para la animación del desplegable
+            scheduleInspection(300); // Dar tiempo a que el menú desplegable aparezca completamente
         } else {
             disarm("Error al pulsar el botón de llamada en la cabecera.");
         }
     }
 
     /**
-     * Toca de forma precisa la primera opción ("Llamada") en el menú desplegado.
+     * Reinspecciona las ventanas en tiempo real para capturar la opción "Llamada"
+     * y ejecuta el gesto de toque táctil directo por coordenadas.
      */
     private void executeTouchOnCallMenuOption() {
         AccessibilityNodeInfo freshRoot = getRootInActiveWindow();
@@ -162,25 +163,25 @@ public class WhatsAppCallAccessibilityService extends AccessibilityService {
                 float x = bounds.exactCenterX();
                 float y = bounds.exactCenterY();
 
-                disarm("Efectuando toque por gesto táctil sobre la opción de llamada.");
+                disarm("Efectuando toque por gesto táctil sobre la opción 'Llamada'.");
                 dispatchTapGesture(x, y);
                 return;
             }
         }
 
-        // Si el nodo aún no está disponible en la jerarquía, reintentar hasta 8 veces
+        // Reintentar si el menú aún está ejecutando la animación de despliegue
         if (menuTouchRetries < 8) {
             menuTouchRetries++;
             handler.postDelayed(this::executeTouchOnCallMenuOption, 150);
         } else {
-            // Respaldo directo por coordenadas estándar del desplegable en la esquina superior derecha
+            // Respaldo táctil por coordenadas globales (área del menú emergente superior derecho)
             int screenWidth = getResources().getDisplayMetrics().widthPixels;
             int screenHeight = getResources().getDisplayMetrics().heightPixels;
 
             float fallbackX = screenWidth * 0.72f;
             float fallbackY = screenHeight * 0.12f;
 
-            disarm("Ejecutando toque de respaldo por coordenadas globales.");
+            disarm("Ejecutando toque de respaldo en coordenadas fijas.");
             dispatchTapGesture(fallbackX, fallbackY);
         }
     }
