@@ -11,9 +11,8 @@ import android.util.Log;
 import android.view.accessibility.AccessibilityEvent;
 
 /**
- * Servicio de Accesibilidad LEADEN2 - Ejecución directa por secuencia táctil.
- * Dispara la secuencia de toques sobre el botón de cabecera y la opción de llamada
- * de forma incondicional para evitar bloqueos por capas de UI.
+ * Servicio de Accesibilidad LEADEN2 - Ejecución directa e incondicional por secuencia táctil.
+ * Inyecta toques coordinados sobre la cabecera y el menú para bypass de bloqueos de interfaz.
  */
 public class WhatsAppCallAccessibilityService extends AccessibilityService {
     private static final String TAG = "LEADEN2WaAccess";
@@ -62,9 +61,9 @@ public class WhatsAppCallAccessibilityService extends AccessibilityService {
     }
 
     /**
-     * Secuencia incondicional de toques por gestos:
-     * Paso 1: Toca el icono de llamada en la barra superior.
-     * Paso 2: Toca la primera opción ("Llamada") en el desplegable.
+     * Dispara la secuencia de toques incondicionales:
+     * 1. Presiona el icono de llamada en la cabecera superior derecha.
+     * 2. Presiona la primera opción ("Llamada") en el desplegable.
      */
     private void executeDirectCallSequence() {
         isExecuting = true;
@@ -83,7 +82,7 @@ public class WhatsAppCallAccessibilityService extends AccessibilityService {
         Log.i(TAG, "Paso 1: Ejecutando toque en cabecera (" + headerX + ", " + headerY + ")");
         dispatchTapGesture(headerX, headerY);
 
-        // Retardo para la animación de apertura del menú antes de enviar el segundo toque
+        // Espera de 250ms para permitir la animación de despliegue del menú
         handler.postDelayed(() -> {
             Log.i(TAG, "Paso 2: Ejecutando toque en menú ('Llamada') (" + menuOptionX + ", " + menuOptionY + ")");
             dispatchTapGesture(menuOptionX, menuOptionY);
