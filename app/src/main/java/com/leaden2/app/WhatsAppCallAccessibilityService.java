@@ -18,7 +18,7 @@ import java.util.Locale;
 
 /**
  * Servicio de Accesibilidad LEADEN2 para automatización de llamadas en WhatsApp.
- * Detecta y presiona el icono de llamada en la cabecera del chat por nodo o coordenadas físicas.
+ * Cierra automáticamente el teclado si está desplegado antes de presionar el botón de llamada.
  */
 public class WhatsAppCallAccessibilityService extends AccessibilityService {
     private static final String TAG = "LEADEN2WaAccess";
@@ -27,7 +27,7 @@ public class WhatsAppCallAccessibilityService extends AccessibilityService {
     private final Handler handler = new Handler(Looper.getMainLooper());
     private boolean checkQueued = false;
     private int loadingPickerRetries = 0;
-    private int headerSearchRetries = 0;
+    private boolean keyboardDismissed = false;
 
     @Override
     public void onServiceConnected() {
@@ -72,7 +72,7 @@ public class WhatsAppCallAccessibilityService extends AccessibilityService {
         SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
         if (!prefs.getBoolean("wa_auto_call_armed", false)) {
             loadingPickerRetries = 0;
-            headerSearchRetries = 0;
+            keyboardDismissed = false;
             return;
         }
 
@@ -96,7 +96,7 @@ public class WhatsAppCallAccessibilityService extends AccessibilityService {
             return;
         }
 
-        // 1. Si el menú emergente de opciones ya está abierto
+        // 1. Si el menú desplegable de opciones ya está abierto
         AccessibilityNodeInfo callMenuOption = findVoiceCallMenuOptionAcrossWindows(root);
         if (callMenuOption != null) {
             triggerTapOnOption(callMenuOption);
@@ -121,22 +121,29 @@ public class WhatsAppCallAccessibilityService extends AccessibilityService {
             loadingPickerRetries = 0;
         }
 
-        // 3. Verificar que el chat activo sea el del contacto
+        // 3. Verificar que el chat activo sea el del contacto correcto
         if (!containsExpectedContact(root, expectedName, expectedPhone)) {
             scheduleInspection(300);
             return;
         }
 
-        // 4. Buscar y pulsar el botón de llamada en la cabecera del chat
+        // 4. Si el teclado está abierto (el campo de texto tiene el foco), ocultarlo
+        if (!keyboardDismissed && isInputBoxFocused(root)) {
+            keyboardDismissed = true;
+            Log.i(TAG, "Teclado detectado. Ocultándolo con botón Atrás...");
+            performGlobalAction(GLOBAL_ACTION_BACK);
+            scheduleInspection(350); // Dar tiempo a que el teclado se oculte completamente
+            return;
+        }
+
+        // 5. Buscar y pulsar el icono de llamadas en la cabecera
         AccessibilityNodeInfo callNode = findHeaderCallControl(root);
         if (callNode != null) {
-            headerSearchRetries = 0;
             boolean clicked = clickNodeOrParentContainer(callNode);
             if (clicked) {
                 Log.i(TAG, "Icono de llamada pulsado. Esperando despliegue del menú...");
                 scheduleInspection(250);
             } else {
-                // Respaldo táctil si el clic de accesibilidad es ignorado por el sistema
                 Rect bounds = new Rect();
                 callNode.getBoundsInScreen(bounds);
                 if (bounds.width() > 0 && bounds.height() > 0) {
@@ -144,22 +151,29 @@ public class WhatsAppCallAccessibilityService extends AccessibilityService {
                     scheduleInspection(250);
                 }
             }
-        } else if (headerSearchRetries < 5) {
-            headerSearchRetries++;
-            scheduleInspection(200);
         } else {
-            // Respaldo táctil por coordenadas absolutas sobre el botón de llamada en la cabecera (esquina superior derecha)
-            headerSearchRetries = 0;
+            // Respaldo de toque directo sobre las coordenadas de la cabecera si el teclado ya bajó
             int screenWidth = getResources().getDisplayMetrics().widthPixels;
             int screenHeight = getResources().getDisplayMetrics().heightPixels;
 
             float callX = screenWidth * 0.78f;
             float callY = screenHeight * 0.065f;
 
-            Log.i(TAG, "Presionando cabecera mediante gesto en coordenadas de respaldo.");
+            Log.i(TAG, "Presionando coordenadas de cabecera libres de teclado.");
             dispatchTapGesture(callX, callY);
             scheduleInspection(300);
         }
+    }
+
+    private boolean isInputBoxFocused(AccessibilityNodeInfo node) {
+        if (node == null) return false;
+        if (node.isFocused() && node.isEditable()) {
+            return true;
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            if (isInputBoxFocused(node.getChild(i))) return true;
+        }
+        return false;
     }
 
     private void triggerTapOnOption(AccessibilityNodeInfo node) {
@@ -170,10 +184,10 @@ public class WhatsAppCallAccessibilityService extends AccessibilityService {
             float x = bounds.exactCenterX();
             float y = bounds.exactCenterY();
 
-            disarm("Marcación de llamada iniciada exitosamente.");
+            disarm("Marcación de llamada completada.");
             dispatchTapGesture(x, y);
         } else {
-            disarm("No se obtuvieron las coordenadas del menú.");
+            disarm("No se pudieron obtener las coordenadas de la opción.");
         }
     }
 
