@@ -18,8 +18,7 @@ import java.util.Locale;
 
 /**
  * Servicio de Accesibilidad LEADEN2 para automatización de llamadas en WhatsApp.
- * Ejecuta la marcación sobre la opción "Llamada" garantizando el toque por coordenadas
- * en ventanas emergentes independientes.
+ * Detecta y presiona el icono de llamada en la cabecera del chat por nodo o coordenadas físicas.
  */
 public class WhatsAppCallAccessibilityService extends AccessibilityService {
     private static final String TAG = "LEADEN2WaAccess";
@@ -28,7 +27,7 @@ public class WhatsAppCallAccessibilityService extends AccessibilityService {
     private final Handler handler = new Handler(Looper.getMainLooper());
     private boolean checkQueued = false;
     private int loadingPickerRetries = 0;
-    private int menuTouchRetries = 0;
+    private int headerSearchRetries = 0;
 
     @Override
     public void onServiceConnected() {
@@ -73,7 +72,7 @@ public class WhatsAppCallAccessibilityService extends AccessibilityService {
         SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
         if (!prefs.getBoolean("wa_auto_call_armed", false)) {
             loadingPickerRetries = 0;
-            menuTouchRetries = 0;
+            headerSearchRetries = 0;
             return;
         }
 
@@ -97,14 +96,14 @@ public class WhatsAppCallAccessibilityService extends AccessibilityService {
             return;
         }
 
-        // 1. Verificar si el menú emergente ya se encuentra en pantalla
+        // 1. Si el menú emergente de opciones ya está abierto
         AccessibilityNodeInfo callMenuOption = findVoiceCallMenuOptionAcrossWindows(root);
         if (callMenuOption != null) {
-            triggerTapSequenceOnOption(callMenuOption);
+            triggerTapOnOption(callMenuOption);
             return;
         }
 
-        // 2. Si WhatsApp muestra la pantalla "Buscando...", esperar
+        // 2. Si WhatsApp muestra "Buscando...", esperar
         if (isLoadingSendPicker(root)) {
             AccessibilityNodeInfo contactRoot = findExpectedContactRootAcrossWindows(expectedName, expectedPhone);
             if (contactRoot != null) {
@@ -122,32 +121,48 @@ public class WhatsAppCallAccessibilityService extends AccessibilityService {
             loadingPickerRetries = 0;
         }
 
-        // 3. Verificar que el chat activo sea el del contacto correcto
+        // 3. Verificar que el chat activo sea el del contacto
         if (!containsExpectedContact(root, expectedName, expectedPhone)) {
             scheduleInspection(300);
             return;
         }
 
-        // 4. Pulsar el icono de llamadas en la cabecera para abrir el menú
+        // 4. Buscar y pulsar el botón de llamada en la cabecera del chat
         AccessibilityNodeInfo callNode = findHeaderCallControl(root);
         if (callNode != null) {
+            headerSearchRetries = 0;
             boolean clicked = clickNodeOrParentContainer(callNode);
             if (clicked) {
-                Log.i(TAG, "Icono de cabecera pulsado. Desplegando menú emergente...");
-                scheduleInspection(200);
+                Log.i(TAG, "Icono de llamada pulsado. Esperando despliegue del menú...");
+                scheduleInspection(250);
             } else {
-                disarm("Error al pulsar el botón de llamada en la cabecera.");
+                // Respaldo táctil si el clic de accesibilidad es ignorado por el sistema
+                Rect bounds = new Rect();
+                callNode.getBoundsInScreen(bounds);
+                if (bounds.width() > 0 && bounds.height() > 0) {
+                    dispatchTapGesture(bounds.exactCenterX(), bounds.exactCenterY());
+                    scheduleInspection(250);
+                }
             }
+        } else if (headerSearchRetries < 5) {
+            headerSearchRetries++;
+            scheduleInspection(200);
         } else {
+            // Respaldo táctil por coordenadas absolutas sobre el botón de llamada en la cabecera (esquina superior derecha)
+            headerSearchRetries = 0;
+            int screenWidth = getResources().getDisplayMetrics().widthPixels;
+            int screenHeight = getResources().getDisplayMetrics().heightPixels;
+
+            float callX = screenWidth * 0.78f;
+            float callY = screenHeight * 0.065f;
+
+            Log.i(TAG, "Presionando cabecera mediante gesto en coordenadas de respaldo.");
+            dispatchTapGesture(callX, callY);
             scheduleInspection(300);
         }
     }
 
-    /**
-     * Ejecuta una secuencia táctil directa por gesto sobre el centro exacto
-     * de la opción "Llamada" en el menú emergente.
-     */
-    private void triggerTapSequenceOnOption(AccessibilityNodeInfo node) {
+    private void triggerTapOnOption(AccessibilityNodeInfo node) {
         Rect bounds = new Rect();
         node.getBoundsInScreen(bounds);
 
@@ -155,25 +170,24 @@ public class WhatsAppCallAccessibilityService extends AccessibilityService {
             float x = bounds.exactCenterX();
             float y = bounds.exactCenterY();
 
-            disarm("Marcación realizada con gesto táctil directo.");
-
-            // Disparar toque táctil por coordenadas reales de pantalla
-            Path clickPath = new Path();
-            clickPath.moveTo(x, y);
-
-            GestureDescription.StrokeDescription stroke =
-                    new GestureDescription.StrokeDescription(clickPath, 0, 70);
-            GestureDescription.Builder builder = new GestureDescription.Builder();
-            builder.addStroke(stroke);
-
-            boolean result = dispatchGesture(builder.build(), null, null);
-            Log.i(TAG, "Gesto táctil de marcación enviado a (" + x + ", " + y + "): " + result);
-        } else if (menuTouchRetries < 6) {
-            menuTouchRetries++;
-            scheduleInspection(150);
+            disarm("Marcación de llamada iniciada exitosamente.");
+            dispatchTapGesture(x, y);
         } else {
-            disarm("No se pudieron determinar las coordenadas del menú.");
+            disarm("No se obtuvieron las coordenadas del menú.");
         }
+    }
+
+    private void dispatchTapGesture(float x, float y) {
+        Path clickPath = new Path();
+        clickPath.moveTo(x, y);
+
+        GestureDescription.StrokeDescription stroke =
+                new GestureDescription.StrokeDescription(clickPath, 0, 70);
+        GestureDescription.Builder builder = new GestureDescription.Builder();
+        builder.addStroke(stroke);
+
+        boolean result = dispatchGesture(builder.build(), null, null);
+        Log.i(TAG, "Gesto táctil enviado a (" + x + ", " + y + "): " + result);
     }
 
     private boolean clickNodeOrParentContainer(AccessibilityNodeInfo node) {
@@ -279,15 +293,15 @@ public class WhatsAppCallAccessibilityService extends AccessibilityService {
         boolean video = desc.contains("video") || desc.contains("videollamada")
                 || idLower.contains("video_call") || idLower.contains("video-call");
         boolean idLooksLikeCall = !idLower.isEmpty()
-                && (idLower.contains("call") || idLower.contains("voice")) && !video;
+                && (idLower.contains("call") || idLower.contains("voice") || idLower.contains("phone")) && !video;
         boolean descriptionLooksLikeCall = !video && (
-                desc.equals("llamada de voz") || desc.equals("llamar") || desc.equals("llamada")
-                || desc.equals("llamada de voz por whatsapp") || desc.equals("voice call")
-                || desc.equals("call") || desc.equals("make a call") || desc.equals("start voice call"));
+                desc.contains("llamada") || desc.contains("llamar") || desc.contains("voice call")
+                || desc.contains("call") || desc.contains("start call"));
+
         if (node.isVisibleToUser() && node.isEnabled()) {
             Rect bounds = new Rect();
             node.getBoundsInScreen(bounds);
-            boolean inHeader = bounds.top >= 0 && bounds.top < (int)(screenHeight * 0.35f)
+            boolean inHeader = bounds.top >= 0 && bounds.top < (int)(screenHeight * 0.25f)
                     && bounds.bottom > bounds.top;
             if (inHeader && (idLooksLikeCall || descriptionLooksLikeCall)) return node;
         }
